@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007 The Android Open Source Project
+ * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _INIT_UEVENTD_PARSER_H
-#define _INIT_UEVENTD_PARSER_H
+extern int sdcard_main(int argc, char **argv);
 
-#include <string>
-#include <vector>
-
-#include "devices.h"
-
-namespace android {
-namespace init {
-
-struct UeventdConfiguration {
-    std::vector<Subsystem> subsystems;
-    std::vector<SysfsPermissions> sysfs_permissions;
-    std::vector<Permissions> dev_permissions;
-    std::vector<std::string> firmware_directories;
-};
-
-UeventdConfiguration ParseConfig(const std::vector<std::string>& configs);
-
-}  // namespace init
-}  // namespace android
-
-#endif
+int main(int argc, char **argv) {
+    return sdcard_main(argc, argv);
+}

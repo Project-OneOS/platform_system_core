@@ -808,12 +808,24 @@ int fs_mgr_mount_all(struct fstab *fstab, int mount_mode)
     int mount_errno = 0;
     int attempted_idx = -1;
     FsManagerAvbUniquePtr avb_handle(nullptr);
+    char propbuf[PROPERTY_VALUE_MAX];
+    bool is_ffbm = false;
 
     if (!fstab) {
         return FS_MGR_MNTALL_FAIL;
     }
 
+    /**get boot mode*/
+    property_get("ro.bootmode", propbuf, "");
+    if ((strncmp(propbuf, "ffbm-00", 7) == 0) || (strncmp(propbuf, "ffbm-01", 7) == 0))
+        is_ffbm = true;
+
     for (i = 0; i < fstab->num_entries; i++) {
+        /* Skip userdata partition in ffbm mode */
+        if (is_ffbm && !strcmp(fstab->recs[i].mount_point, "/data")){
+            continue;
+        }
+
         /* Don't mount entries that are managed by vold or not for the mount mode*/
         if ((fstab->recs[i].fs_mgr_flags & (MF_VOLDMANAGED | MF_RECOVERYONLY)) ||
              ((mount_mode == MOUNT_MODE_LATE) && !fs_mgr_is_latemount(&fstab->recs[i])) ||
@@ -982,9 +994,15 @@ int fs_mgr_mount_all(struct fstab *fstab, int mount_mode)
         } else if (mret && mount_errno != EBUSY && mount_errno != EACCES &&
                    should_use_metadata_encryption(&fstab->recs[attempted_idx])) {
             if (!call_vdc({"cryptfs", "mountFstab", fstab->recs[attempted_idx].mount_point})) {
-                ++error_count;
+                PERROR << android::base::StringPrintf(
+                    "Failure while mounting metadata, setting flag to needing recovery "
+                    "partition on %s at %s options: %s",
+                    fstab->recs[attempted_idx].blk_device, fstab->recs[attempted_idx].mount_point,
+                    fstab->recs[attempted_idx].fs_options);
+                encryptable = FS_MGR_MNTALL_DEV_NEEDS_RECOVERY_WIPE_PROMPT;
+            } else {
+                encryptable = FS_MGR_MNTALL_DEV_IS_METADATA_ENCRYPTED;
             }
-            encryptable = FS_MGR_MNTALL_DEV_IS_METADATA_ENCRYPTED;
             continue;
         } else {
             // fs_options might be null so we cannot use PERROR << directly.

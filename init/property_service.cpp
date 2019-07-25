@@ -62,6 +62,7 @@
 #include "selinux.h"
 #include "subcontext.h"
 #include "util.h"
+#include "vendor_init.h"
 
 using namespace std::literals;
 
@@ -689,13 +690,29 @@ void property_load_boot_defaults() {
     load_properties_from_file("/odm/default.prop", NULL);
     load_properties_from_file("/vendor/default.prop", NULL);
 
-    update_sys_usb_config();
+    if (android::base::GetBoolProperty("ro.persistent_properties.ready", false)) {
+        update_sys_usb_config();
+    }
 }
 
 static void load_override_properties() {
     if (ALLOW_LOCAL_PROP_OVERRIDE) {
         load_properties_from_file("/data/local.prop", NULL);
     }
+}
+
+static int check_rlim_action() {
+    struct rlimit rl;
+    std::string value  = android::base::GetProperty("persist.debug.trace", "");
+
+    if(value == "1") {
+        rl.rlim_cur = RLIM_INFINITY;
+        rl.rlim_max = RLIM_INFINITY;
+        if (setrlimit(RLIMIT_CORE, &rl) < 0) {
+            PLOG(ERROR) << "could not enable core file generation";
+        }
+    }
+    return 0;
 }
 
 /* When booting an encrypted system, /data is not mounted when the
@@ -723,6 +740,8 @@ void load_persist_props(void) {
     }
     persistent_properties_loaded = true;
     property_set("ro.persistent_properties.ready", "true");
+    /*check for coredump*/
+    check_rlim_action();
 }
 
 void load_recovery_id_prop() {
@@ -761,6 +780,10 @@ void load_system_props() {
     load_properties_from_file("/odm/build.prop", NULL);
     load_properties_from_file("/vendor/build.prop", NULL);
     load_properties_from_file("/factory/factory.prop", "ro.*");
+
+    // Update with vendor-specific property runtime overrides
+    vendor_load_properties();
+
     load_recovery_id_prop();
 }
 

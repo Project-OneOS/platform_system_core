@@ -57,6 +57,7 @@ static int system_bg_cpuset_fd = -1;
 static int bg_cpuset_fd = -1;
 static int fg_cpuset_fd = -1;
 static int ta_cpuset_fd = -1; // special cpuset for top app
+static int aa_cpuset_fd = -1; // special cpuset for audio app
 static int rs_cpuset_fd = -1;  // special cpuset for screen off restrictions
 
 // File descriptors open to /dev/stune/../tasks, setup by initialize, or -1 on error
@@ -64,6 +65,10 @@ static int bg_schedboost_fd = -1;
 static int fg_schedboost_fd = -1;
 static int ta_schedboost_fd = -1;
 static int rt_schedboost_fd = -1;
+
+// File descriptors open to /dev/blkio/../tasks, setup by initialize, or -1 on error
+static int bg_blkio_fd = -1;
+static int fg_blkio_fd = -1;
 
 /* Add tid to the scheduling group defined by the policy */
 static int add_tid_to_cgroup(int tid, int fd)
@@ -138,6 +143,34 @@ bool schedboost_enabled() {
     return enabled;
 }
 
+/*
+    If CONFIG_BLK_CGROUP and CONFIG_CFQ_GROUP_IOSCHED for Linux kernel
+    is set, "tasks" can be found under /dev/blkio mounted in init.rc;
+    otherwise, that file does not exist even though the directory,
+    /dev/blkio, is still created (by init.rc).
+*/
+
+bool blkio_enabled() {
+    static bool enabled = (access("/dev/blkio/tasks", F_OK) == 0);
+
+    return enabled;
+}
+
+static void __init_blkio(void) {
+    if (blkio_enabled()) {
+        if (!access("/dev/blkio/tasks", W_OK)) {
+            fg_blkio_fd = open("/dev/blkio/tasks", O_WRONLY | O_CLOEXEC);
+            if (fg_blkio_fd < 0) {
+                SLOGW("open of blkio fg file failed error %s\n",strerror(errno));
+            }
+            bg_blkio_fd = open("/dev/blkio/bg/tasks", O_WRONLY | O_CLOEXEC);
+            if (bg_blkio_fd < 0) {
+                SLOGW("open of blkio bg file failed error %s\n",strerror(errno));
+            }
+        }
+    }
+}
+
 static void __initialize() {
     const char* filename;
 
@@ -152,6 +185,10 @@ static void __initialize() {
             system_bg_cpuset_fd = open(filename, O_WRONLY | O_CLOEXEC);
             filename = "/dev/cpuset/top-app/tasks";
             ta_cpuset_fd = open(filename, O_WRONLY | O_CLOEXEC);
+            filename = "/dev/cpuset/audio-app/tasks";
+            aa_cpuset_fd = open(filename, O_WRONLY | O_CLOEXEC);
+
+
             filename = "/dev/cpuset/restricted/tasks";
             rs_cpuset_fd = open(filename, O_WRONLY | O_CLOEXEC);
 
@@ -167,6 +204,8 @@ static void __initialize() {
             }
         }
     }
+
+    __init_blkio();
 
     char buf[64];
     snprintf(buf, sizeof(buf), "/proc/%d/timerslack_ns", getpid());
@@ -271,7 +310,9 @@ int get_sched_policy(int tid, SchedPolicy *policy)
         *policy = SP_BACKGROUND;
     } else if (!strcmp(grpBuf, "top-app")) {
         *policy = SP_TOP_APP;
-    } else {
+    } else if (!strcmp(grpBuf, "audio-app")) {
+        *policy = SP_AUDIO_APP;
+    }else {
         errno = ERANGE;
         return -1;
     }
@@ -292,24 +333,33 @@ int set_cpuset_policy(int tid, SchedPolicy policy)
     pthread_once(&the_once, __initialize);
 
     int fd = -1;
+    int blkio_fd = -1;
     int boost_fd = -1;
     switch (policy) {
     case SP_BACKGROUND:
         fd = bg_cpuset_fd;
         boost_fd = bg_schedboost_fd;
+        blkio_fd = bg_blkio_fd;
         break;
     case SP_FOREGROUND:
-    case SP_AUDIO_APP:
-    case SP_AUDIO_SYS:
         fd = fg_cpuset_fd;
         boost_fd = fg_schedboost_fd;
+        blkio_fd = fg_blkio_fd;
         break;
     case SP_TOP_APP :
         fd = ta_cpuset_fd;
         boost_fd = ta_schedboost_fd;
+        blkio_fd = fg_blkio_fd;
         break;
     case SP_SYSTEM:
         fd = system_bg_cpuset_fd;
+        blkio_fd = fg_blkio_fd;
+        break;
+    case SP_AUDIO_APP:
+    case SP_AUDIO_SYS:
+        fd = aa_cpuset_fd;
+        boost_fd = fg_schedboost_fd;
+        blkio_fd = fg_blkio_fd;
         break;
     case SP_RESTRICTED:
         fd = rs_cpuset_fd;
@@ -331,6 +381,12 @@ int set_cpuset_policy(int tid, SchedPolicy policy)
         }
     }
 
+    if (blkio_enabled()) {
+        if(blkio_fd > 0 && add_tid_to_cgroup(tid, blkio_fd) != 0) {
+            if (errno != ESRCH && errno != ENOENT)
+                return -errno;
+        }
+    }
     return 0;
 }
 
@@ -397,7 +453,7 @@ int set_sched_policy(int tid, SchedPolicy policy)
     case SP_AUDIO_APP:
     case SP_AUDIO_SYS:
     case SP_TOP_APP:
-        SLOGD("^^^ tid %d (%s)", tid, thread_name);
+        SLOGD("^^^ tid %d policy %d (%s)", tid, policy, thread_name);
         break;
     case SP_SYSTEM:
         SLOGD("/// tid %d (%s)", tid, thread_name);
@@ -418,8 +474,6 @@ int set_sched_policy(int tid, SchedPolicy policy)
             boost_fd = bg_schedboost_fd;
             break;
         case SP_FOREGROUND:
-        case SP_AUDIO_APP:
-        case SP_AUDIO_SYS:
             boost_fd = fg_schedboost_fd;
             break;
         case SP_TOP_APP:
@@ -428,6 +482,10 @@ int set_sched_policy(int tid, SchedPolicy policy)
         case SP_RT_APP:
 	    boost_fd = rt_schedboost_fd;
 	    break;
+        case SP_AUDIO_APP:
+        case SP_AUDIO_SYS:
+            boost_fd = fg_schedboost_fd;
+            break;
         default:
             boost_fd = -1;
             break;
@@ -438,6 +496,30 @@ int set_sched_policy(int tid, SchedPolicy policy)
                 return -errno;
         }
 
+    }
+
+    if (blkio_enabled()) {
+        int blkio_fd = -1;
+        switch (policy) {
+        case SP_BACKGROUND:
+                blkio_fd = bg_blkio_fd;
+                break;
+        case SP_FOREGROUND:
+        case SP_AUDIO_APP:
+        case SP_AUDIO_SYS:
+                blkio_fd = fg_blkio_fd;
+                break;
+        case SP_TOP_APP:
+                blkio_fd = fg_blkio_fd;
+                break;
+        default:
+                blkio_fd = -1;
+                break;
+        }
+        if (blkio_fd > 0 && add_tid_to_cgroup(tid, blkio_fd) != 0) {
+            if (errno != ESRCH && errno != ENOENT)
+                return -errno;
+        }
     }
 
     set_timerslack_ns(tid, policy == SP_BACKGROUND ? TIMER_SLACK_BG : TIMER_SLACK_FG);

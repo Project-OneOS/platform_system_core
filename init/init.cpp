@@ -312,6 +312,10 @@ void HandleControlMessage(const std::string& msg, const std::string& name, pid_t
 
 static Result<Success> wait_for_coldboot_done_action(const BuiltinArguments& args) {
     Timer t;
+    std::chrono::nanoseconds timeout = 60s;
+#ifdef SLOW_BOARD
+    timeout = 6000s;
+#endif
 
     LOG(VERBOSE) << "Waiting for " COLDBOOT_DONE "...";
 
@@ -323,7 +327,7 @@ static Result<Success> wait_for_coldboot_done_action(const BuiltinArguments& arg
     // property. We still panic if it takes more than a minute though,
     // because any build that slow isn't likely to boot at all, and we'd
     // rather any test lab devices fail back to the bootloader.
-    if (wait_for_file(COLDBOOT_DONE, 60s) < 0) {
+    if (wait_for_file(COLDBOOT_DONE, timeout) < 0) {
         LOG(FATAL) << "Timed out waiting for " COLDBOOT_DONE;
     }
 
@@ -674,6 +678,20 @@ int main(int argc, char** argv) {
     // Set libavb version for Framework-only OTA match in Treble build.
     const char* avb_version = getenv("INIT_AVB_VERSION");
     if (avb_version) property_set("ro.boot.avb_version", avb_version);
+
+    // Set memcg property based on kernel cmdline argument
+    bool memcg_enabled = android::base::GetBoolProperty("ro.boot.memcg",false);
+    if (memcg_enabled) {
+       // root memory control cgroup
+       mkdir("/dev/memcg", 0700);
+       chown("/dev/memcg",AID_ROOT,AID_SYSTEM);
+       mount("none", "/dev/memcg", "cgroup", 0, "memory");
+       // app mem cgroups, used by activity manager, lmkd and zygote
+       mkdir("/dev/memcg/apps/",0755);
+       chown("/dev/memcg/apps/",AID_SYSTEM,AID_SYSTEM);
+       mkdir("/dev/memcg/system",0550);
+       chown("/dev/memcg/system",AID_SYSTEM,AID_SYSTEM);
+    }
 
     // Clean up our environment.
     unsetenv("INIT_SECOND_STAGE");

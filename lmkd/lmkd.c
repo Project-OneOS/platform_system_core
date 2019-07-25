@@ -120,6 +120,9 @@ static bool kill_heaviest_task;
 static unsigned long kill_timeout_ms;
 static bool use_minfree_levels;
 static bool per_app_memcg;
+static bool enhance_batch_kill;
+static bool enable_adaptive_lmk;
+static bool enable_userspace_lmk;
 
 /* data required to handle events */
 struct event_handler_info {
@@ -1359,6 +1362,11 @@ static void mp_event_common(int data, uint32_t events __unused) {
             minfree = lowmem_minfree[i];
             if (other_free < minfree && other_file < minfree) {
                 min_score_adj = lowmem_adj[i];
+                // Adaptive LMK
+                if (enable_adaptive_lmk && level == VMPRESS_LEVEL_CRITICAL &&
+                        i > lowmem_targets_size-4) {
+                    min_score_adj = lowmem_adj[i-1];
+                }
                 break;
             }
         }
@@ -1373,9 +1381,15 @@ static void mp_event_common(int data, uint32_t events __unused) {
             return;
         }
 
-        /* Free up enough pages to push over the highest minfree level */
-        pages_to_free = lowmem_minfree[lowmem_targets_size - 1] -
-            ((other_free < other_file) ? other_free : other_file);
+        if (enhance_batch_kill) {
+            // Kill one process at a time.
+            pages_to_free = 0;
+        } else {
+            /* Original minfree logic */
+            /* Free up enough pages to push over the highest minfree level */
+            pages_to_free = lowmem_minfree[lowmem_targets_size - 1] -
+                ((other_free < other_file) ? other_free : other_file);
+        }
         goto do_kill;
     }
 
@@ -1483,6 +1497,8 @@ do_kill:
                 other_file * page_k, mi.field.nr_free_pages * page_k,
                 zi.field.totalreserve_pages * page_k,
                 minfree * page_k, min_score_adj);
+        } else if (pages_freed == 0) {
+            ALOGI("No processes killed");
         } else {
             ALOGI("Killing to reclaim %ldkB, reclaimed %ldkB at oom_adj %d",
                 pages_to_free * page_k, pages_freed * page_k, min_score_adj);
@@ -1606,7 +1622,7 @@ static int init(void) {
     maxevents++;
 
     has_inkernel_module = !access(INKERNEL_MINFREE_PATH, W_OK);
-    use_inkernel_interface = has_inkernel_module;
+    use_inkernel_interface = has_inkernel_module && !enable_userspace_lmk;
 
     if (use_inkernel_interface) {
         ALOGI("Using in-kernel low memory killer interface");
@@ -1705,6 +1721,13 @@ int main(int argc __unused, char **argv __unused) {
     use_minfree_levels =
         property_get_bool("ro.lmk.use_minfree_levels", false);
     per_app_memcg = property_get_bool("ro.config.per_app_memcg", low_ram_device);
+    enhance_batch_kill =
+        property_get_bool("ro.lmk.enhance_batch_kill", true);
+    enable_adaptive_lmk =
+        property_get_bool("ro.lmk.enable_adaptive_lmk", false);
+    enable_userspace_lmk =
+        property_get_bool("ro.lmk.enable_userspace_lmk", false);
+
 #ifdef LMKD_LOG_STATS
     statslog_init(&log_ctx, &enable_stats_log);
 #endif

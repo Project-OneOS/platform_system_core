@@ -50,6 +50,8 @@
 #include <private/android_filesystem_config.h>
 #include <selinux/selinux.h>
 
+#include <cutils/properties.h>
+
 #include "action_manager.h"
 #include "capabilities.h"
 #include "init.h"
@@ -103,15 +105,22 @@ class MountEntry {
 
     void DoFsck() {
         int st;
+        if (!strcmp(mnt_dir_.c_str(), "/data") || !strcmp(mnt_dir_.c_str(), "/cache"))
+            return;
+
         if (IsF2Fs()) {
             const char* f2fs_argv[] = {
-                "/system/bin/fsck.f2fs", "-f", mnt_fsname_.c_str(),
+                    "/system/bin/fsck.f2fs",
+                    "-a",
+                    mnt_fsname_.c_str(),
             };
             android_fork_execvp_ext(arraysize(f2fs_argv), (char**)f2fs_argv, &st, true, LOG_KLOG,
                                     true, nullptr, nullptr, 0);
         } else if (IsExt4()) {
             const char* ext4_argv[] = {
-                "/system/bin/e2fsck", "-f", "-y", mnt_fsname_.c_str(),
+                    "/system/bin/e2fsck",
+                    "-y",
+                    mnt_fsname_.c_str(),
             };
             android_fork_execvp_ext(arraysize(ext4_argv), (char**)ext4_argv, &st, true, LOG_KLOG,
                                     true, nullptr, nullptr, 0);
@@ -312,11 +321,17 @@ static UmountStat TryUmountAndFsck(bool runFsck, std::chrono::milliseconds timeo
     UmountStat stat = UmountPartitions(timeout - t.duration());
     if (stat != UMOUNT_STAT_SUCCESS) {
         LOG(INFO) << "umount timeout, last resort, kill all and try";
-        if (DUMP_ON_UMOUNT_FAILURE) DumpUmountDebuggingInfo(true);
+        bool dumpUmountDebugInfo = property_get_bool("persist.sys.dumpUmountDebugInfo",false);
+        if (dumpUmountDebugInfo) {
+            if (DUMP_ON_UMOUNT_FAILURE) DumpUmountDebuggingInfo(true);
+        }
         KillAllProcesses();
         // even if it succeeds, still it is timeout and do not run fsck with all processes killed
         UmountStat st = UmountPartitions(0ms);
-        if ((st != UMOUNT_STAT_SUCCESS) && DUMP_ON_UMOUNT_FAILURE) DumpUmountDebuggingInfo(false);
+        if (dumpUmountDebugInfo) {
+            if ((st != UMOUNT_STAT_SUCCESS) && DUMP_ON_UMOUNT_FAILURE)
+                 DumpUmountDebuggingInfo(false);
+        }
     }
 
     if (stat == UMOUNT_STAT_SUCCESS && runFsck) {
