@@ -702,14 +702,24 @@ int SecondStageMain(int argc, char** argv) {
     bool memcg_enabled = android::base::GetBoolProperty("ro.boot.memcg",false);
     if (memcg_enabled) {
        // root memory control cgroup
-       mkdir("/dev/memcg", 0700);
-       chown("/dev/memcg",AID_ROOT,AID_SYSTEM);
+       mkdir("/dev/memcg", 0755);
+       chown("/dev/memcg",AID_SYSTEM,AID_SYSTEM);
        mount("none", "/dev/memcg", "cgroup", 0, "memory");
        // app mem cgroups, used by activity manager, lmkd and zygote
        mkdir("/dev/memcg/apps/",0755);
        chown("/dev/memcg/apps/",AID_SYSTEM,AID_SYSTEM);
        mkdir("/dev/memcg/system",0550);
        chown("/dev/memcg/system",AID_SYSTEM,AID_SYSTEM);
+       if (auto result = WriteFile("/dev/memcg/memory.swappiness", "100"); !result) {
+           LOG(ERROR) << "Unable to write 100 to /dev/memcg/memory.swappiness" << result.error();
+       }
+       if (auto result = WriteFile("/dev/memcg/apps/memory.swappiness", "100"); !result) {
+           LOG(ERROR) << "Unable to write 100 to /dev/memcg/memory.swappiness" << result.error();
+       }
+       if (auto result = WriteFile("/dev/memcg/system/memory.swappiness", "100"); !result) {
+           LOG(ERROR) << "Unable to write 100 to /dev/memcg/memory.swappiness" << result.error();
+       }
+
     }
 
     // Clean up our environment.
@@ -765,14 +775,14 @@ int SecondStageMain(int argc, char** argv) {
 
     am.QueueBuiltinAction(SetupCgroupsAction, "SetupCgroups");
 
-    am.QueueEventTrigger("early-init");
+   am.QueueBuiltinAction(SetKptrRestrictAction, "SetKptrRestrict");
+   am.QueueEventTrigger("early-init");
 
     // Queue an action that waits for coldboot done so we know ueventd has set up all of /dev...
     am.QueueBuiltinAction(wait_for_coldboot_done_action, "wait_for_coldboot_done");
     // ... so that we can start queuing up actions that require stuff from /dev.
     am.QueueBuiltinAction(MixHwrngIntoLinuxRngAction, "MixHwrngIntoLinuxRng");
     am.QueueBuiltinAction(SetMmapRndBitsAction, "SetMmapRndBits");
-    am.QueueBuiltinAction(SetKptrRestrictAction, "SetKptrRestrict");
     Keychords keychords;
     am.QueueBuiltinAction(
         [&epoll, &keychords](const BuiltinArguments& args) -> Result<Success> {
